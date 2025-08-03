@@ -301,7 +301,7 @@ if __name__ == "__main__":
         learning_rate=0.01,
         epochs=100,
         use_investment_as_feature=True,
-        repair=False,
+        repair=True,
         save_model=True,
         save_path="../saved_models",
         model_name="MLPModel_small_instance3"

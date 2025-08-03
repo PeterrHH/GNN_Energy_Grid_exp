@@ -6,3 +6,11 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+
+../venv/*
+venv/*
+../venv/
+venv/
+
+src/__pycache__/*
+.DS_Store

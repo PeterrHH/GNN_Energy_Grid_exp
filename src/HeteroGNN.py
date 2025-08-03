@@ -306,20 +306,17 @@ def main(base_path, hidden_channels, learning_rate,
     flow_gt = gt['flow']
     p_loss_gt = gt['p_loss']
 
-    scaler = HeteroGraphScalar()
+    scaler = HeteroGraphScalar(scale = False)
     tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(tech_features, loc_features, demand_features, flow_features)
-
 
     production_gt, flow_gt = scaler.normalize_node_gt(production_gt, flow_gt)
     
-
     total_time = demand_features.shape[0]
+
     # Create a hetero graph
     graph_list = []
 
     for t in range(total_time):
-        if t == 0:
-            print(f"In LOADING tech feat shape : {tech_features[t].shape} demand feat shape: {demand_features[t].shape}, flow feat shape: {flow_features.shape}")
         data = HeteroData()
         data['technology'].x = tech_features[t]
         data['technology'].num_nodes = tech_features[t].size(0)
@@ -359,6 +356,7 @@ def main(base_path, hidden_channels, learning_rate,
                       repair = repair,
                         add_self_loops=add_self_loop,
                         use_investment_as_feature=use_investment_as_feature)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay= 1e-4)
 
 
@@ -400,7 +398,7 @@ def main(base_path, hidden_channels, learning_rate,
             
             if use_const_violation_loss:
                 # FLow
-                loss = prod_loss + flow_loss + flow_cap_loss + 10*balance_loss
+                loss = prod_loss + flow_loss + flow_cap_loss + balance_loss
             else:
                 loss = prod_loss + flow_loss
             loss.backward()
@@ -434,6 +432,7 @@ def main(base_path, hidden_channels, learning_rate,
     training_end = time.time()
 
     model.eval()
+    
     start_time = time.time()
     production, flow = model(test_data.x_dict, test_data.edge_index_dict)
     inference_duration = time.time() - start_time
@@ -493,7 +492,7 @@ def main(base_path, hidden_channels, learning_rate,
     return training_end - training_start
 
 
-def evaluate_model(base_path, model_path, training_time):
+def evaluate_model(base_path, model_path, training_time,repair):
     print("--------------------------------")
     print(f"Runnin evaluation using model {model_path} on dataset {base_path}")
 
@@ -511,6 +510,7 @@ def evaluate_model(base_path, model_path, training_time):
     )
     model.load_state_dict(state_dict)
     model.eval()
+    model.repair = repair
 
     # load data
     node_feat, edge_index, gt, flow_loc_mapping,scalars = build_hetero_graph(base_path, config['use_investment_as_feature'])
@@ -529,7 +529,7 @@ def evaluate_model(base_path, model_path, training_time):
     p_loss_gt = gt['p_loss']
 
     # Normalize
-    scaler = HeteroGraphScalar()
+    scaler = HeteroGraphScalar(scale=False)
     
     tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(
         tech_features, loc_features, demand_features, flow_features
@@ -562,6 +562,11 @@ def evaluate_model(base_path, model_path, training_time):
         data['location'].y = p_loss_gt[t]
         graph_list.append(data)
 
+    train_data, test_data = train_test_split(graph_list, test_size=0.2, random_state=42)
+    train_data, val_data = train_test_split(train_data, test_size=0.1, random_state=42)
+    train_loader = DataLoader(train_data, batch_size=1, shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=1)
+    test_loader = DataLoader(test_data, batch_size=1)
     # Create the Report object
     report = Report(loss_cost=scalars["loss_load"])
     report.inference_time = 0
@@ -574,7 +579,7 @@ def evaluate_model(base_path, model_path, training_time):
             "exceed_import_capacity":  0,
         }
     # Evaluate over each time step individually and log each to report
-    for idx, graph in enumerate(graph_list):
+    for idx, graph in enumerate(test_loader):
         # Run model inference
         start_time = time.perf_counter()
         pred_prod, pred_flow = model(graph.x_dict, graph.edge_index_dict)
@@ -652,14 +657,14 @@ def evaluate_model(base_path, model_path, training_time):
         # Accumulate time
         report.inference_time += inference_duration
 
-    total_instances = len(graph_list)
+    total_instances = len(test_loader)
     print("\n=== Feasibility‐check failure summary ===")
     for check, count in failure_counts.items():
         pct = count / total_instances * 100
         print(f"  • {check:25s} failed in {count}/{total_instances} instances ({pct:.1f}%)")
 
     # Average inference time
-    report.inference_time /= len(graph_list)
+    report.inference_time /= len(test_loader)
     print(f"Total Inference Time: {report.inference_time:.4f} seconds")
     # Save report
     report.make_report(
@@ -670,34 +675,34 @@ def evaluate_model(base_path, model_path, training_time):
     )
 
 
-    print("\n-------------Feasibility Check Example------------------")
-    full_data_loader = DataLoader(graph_list, batch_size=len(graph_list))  # Single batch for test data
-    batch = next(iter(full_data_loader))
-    out_prod, out_flow = model(batch.x_dict, batch.edge_index_dict)
+    # print("\n-------------Feasibility Check Example------------------")
+    # full_data_loader = DataLoader(graph_list, batch_size=len(graph_list))  # Single batch for test data
+    # batch = next(iter(full_data_loader))
+    # out_prod, out_flow = model(batch.x_dict, batch.edge_index_dict)
 
-    Total_time = production_gt.shape[0]
-    out_prod = out_prod.reshape(Total_time, -1)  # Reshape to [T, N_tech]
-    out_flow = out_flow.reshape(Total_time, -1)  # Reshape to
+    # Total_time = production_gt.shape[0]
+    # out_prod = out_prod.reshape(Total_time, -1)  # Reshape to [T, N_tech]
+    # out_flow = out_flow.reshape(Total_time, -1)  # Reshape to
 
-    out_prod, out_flow = scaler.inverse_transform(out_prod, out_flow)
+    # out_prod, out_flow = scaler.inverse_transform(out_prod, out_flow)
 
-    # Reshape into [T, N_tech] and [T, N_flow]
-    out_prod = out_prod.reshape(Total_time, -1)  
-    out_flow = out_flow.reshape(Total_time, -1) 
+    # # Reshape into [T, N_tech] and [T, N_flow]
+    # out_prod = out_prod.reshape(Total_time, -1)  
+    # out_flow = out_flow.reshape(Total_time, -1) 
 
-    tech_features, demand_features, flow_features = scaler.inverse_batch_data(batch, T = full_data_loader.batch_size)
-
-    # Rescale Tech feature and flow feature
-    calc_constraint_violation(
-        demand_features, 
-        tech_features, 
-        flow_features, 
-        out_prod, 
-        out_flow,
-        flow_loc_mapping,
-        tech2loc_index,
-        tol=1e-4
-    )
+    # tech_features, demand_features, flow_features = scaler.inverse_batch_data(batch, T = test_loader.batch_size)
+    # print(f"Tech features shape: {tech_features.shape}, Demand features shape: {demand_features.shape}, Flow features shape: {flow_features.shape}")
+    # # Rescale Tech feature and flow feature
+    # calc_constraint_violation(
+    #     demand_features, 
+    #     tech_features, 
+    #     flow_features, 
+    #     out_prod, 
+    #     out_flow,
+    #     flow_loc_mapping,
+    #     tech2loc_index,
+    #     tol=1e-4
+    # )
 
 
 if __name__ == "__main__":
@@ -705,22 +710,28 @@ if __name__ == "__main__":
     Set logging to False, to not log anything to wandb, only show these logs in the terminal locally.
 
     '''
-    base_path = "Instances/4Nodes-ren-1-cycle"
+    base_path = "Instances/2Nodes-ren"
 
     training_time = main(base_path,
          learning_rate=0.01,
          hidden_channels= 32,
-         n_epochs = 40,
+         n_epochs = 50,
          n_layers = 4,
          loss_mask=False,
          logging=False,
          use_investment_as_feature = True,
          add_self_loop= True,
-         use_const_violation_loss = True,
-         repair = True,
+         use_const_violation_loss = False,
+         repair = False,
          save_model = True,
          save_path= "../",
          save_model_name = "GNNModel-3Nodes-ren")
 
-    base_path = "Instances/4Nodes-ren-1-cycle"
-    evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time)
+    # base_path = "Instances/4Nodes-ren-1-cycle"
+    evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = False)
+
+
+'''
+Goal:
+Only eval using repair,
+'''
