@@ -11,14 +11,16 @@ import numpy as np
 from matplotlib.patches import FancyArrowPatch
 from sklearn.model_selection import train_test_split
 from torch_geometric.loader import DataLoader
-from GraphBuilder import build_hetero_graph
-from Scalar_Hetero import HeteroGraphScalar
 import json
 import wandb
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import SAGEConv, to_hetero, HeteroConv, GATConv, GraphConv
 import time
 import torch.nn as nn
+
+from GraphBuilder import build_hetero_graph, build_graph_list
+from utils import *
+from Scalar_Hetero import HeteroGraphScalar
 from Report import Report
 from Eval import calculate_loss, calc_constraint_violation, summarize_feasibility
 
@@ -112,8 +114,12 @@ class ProportionalCompletionLayer(torch.nn.Module):
 
 
 class HeteroGNN(torch.nn.Module):
-    def __init__(self, hidden_channels, num_layers = 5, add_self_loops=False, repair = True, use_investment_as_feature = True, dropout_rate = 0.1):
+    def __init__(self, hidden_channels, metadata, 
+                 num_layers = 5, add_self_loops=False, 
+                 repair = True, dropout_rate = 0.1,
+                 use_investment_as_feature = True):
         super().__init__()
+        self.node_type, self.edge_type = metadata
         self.dropout_rate = dropout_rate
         # Define a conv for each edge type
         if use_investment_as_feature:
@@ -131,44 +137,47 @@ class HeteroGNN(torch.nn.Module):
         self.repair = repair
         self.num_layers = num_layers
         self.encoder = nn.ModuleDict({
-            'technology': nn.Sequential(
-                nn.Linear(self.input_dim['technology'], hidden_channels),
-                nn.ReLU(),
-                nn.Dropout(self.dropout_rate)
-            ),
-            'location': nn.Sequential(
-                nn.Linear(self.input_dim['location'], hidden_channels),
-                nn.ReLU(),
-            ),
-            'demand': nn.Sequential(
-                nn.Linear(self.input_dim['demand'], hidden_channels),
-                nn.ReLU(),
-                nn.Dropout(self.dropout_rate)
-            ),
-            'flow': nn.Sequential(
-                nn.Linear(self.input_dim['flow'], hidden_channels),
-                nn.Tanh(),
-                nn.Dropout(self.dropout_rate)
-            ),
-        })
+                nt: nn.Sequential(
+                    nn.Linear(self.input_dim[nt], hidden_channels),
+                    nn.ReLU() if nt != 'flow' else nn.Tanh(),
+                    nn.Dropout(self.dropout_rate)
+                )
+                for nt in self.node_type
+            })
+
+        def make_conv(in_hidden: bool):
+            return HeteroConv({
+                et: SAGEConv((-1, -1) if not in_hidden else (hidden_channels, hidden_channels),
+                             hidden_channels)
+                for et in self.edge_type
+            }, aggr='sum')
+
+        # self.convs_list = nn.ModuleList([
+        #     HeteroConv({
+        #     ('technology', 'powers', 'location'): self.make_subsequent_layers(),
+        #     ('location', 'powered_by', 'technology'): self.make_subsequent_layers(),
+        #     ('location', 'feeds', 'demand'): self.make_subsequent_layers(),
+        #     ('demand', 'fed_by', 'location'): self.make_subsequent_layers(),
+        #     ('flow', 'connected_to', 'location'): self.make_subsequent_layers(),
+        #     ('location', 'connected_from', 'flow'): self.make_subsequent_layers(),
+        # }, aggr='sum') for _ in range(num_layers)
+        # ])
+
+        self.convs_list = nn.ModuleList(
+            [make_conv(in_hidden=False)] + [make_conv(in_hidden=True) for _ in range(num_layers - 1)]
+        )
 
 
-        self.convs_list = nn.ModuleList([
-            HeteroConv({
-            ('technology', 'powers', 'location'): self.make_subsequent_layers(),
-            ('location', 'powered_by', 'technology'): self.make_subsequent_layers(),
-            ('location', 'feeds', 'demand'): self.make_subsequent_layers(),
-            ('demand', 'fed_by', 'location'): self.make_subsequent_layers(),
-            ('flow', 'connected_to', 'location'): self.make_subsequent_layers(),
-            ('location', 'connected_from', 'flow'): self.make_subsequent_layers(),
-        }, aggr='sum') for _ in range(num_layers)
-        ])
 
-        self.self_loop_weights = nn.ParameterDict({ 
-            'technology': nn.Parameter(torch.tensor(1.0)),  
-            'location': nn.Parameter(torch.tensor(1.0)),
-            'demand': nn.Parameter(torch.tensor(1.0)),
-            'flow': nn.Parameter(torch.tensor(1.0)),
+        # self.self_loop_weights = nn.ParameterDict({ 
+        #     'technology': nn.Parameter(torch.tensor(1.0)),  
+        #     'location': nn.Parameter(torch.tensor(1.0)),
+        #     'demand': nn.Parameter(torch.tensor(1.0)),
+        #     'flow': nn.Parameter(torch.tensor(1.0)),
+        # })
+
+        self.self_loop_weights = nn.ParameterDict({
+            nt: nn.Parameter(torch.tensor(1.0)) for nt in self.node_type
         })
 
         self.proportional_completion = ProportionalCompletionLayer()
@@ -187,6 +196,7 @@ class HeteroGNN(torch.nn.Module):
 
 
     def forward(self, x_dict, edge_index_dict):
+        
         x_in = x_dict.copy()
         x_dict = {
             node_type: self.encoder[node_type](x)
@@ -208,7 +218,7 @@ class HeteroGNN(torch.nn.Module):
                 }
             else:
                 x_dict = x_out
-
+        
         production_out =  self.demand_lin(x_dict['technology'])
 
         # Apply flow bound layer
@@ -217,11 +227,13 @@ class HeteroGNN(torch.nn.Module):
 
         # If we use repair layer, we MUST USE INVESTMENT AS FEATURE
         if self.repair:
+
             assert x_in['technology'].shape[1] == 4, "Repair layer requires technology input to have 4 features: [variable_cost, unit_capacity, investment, availability]"
             input_demand = x_in['demand']
             input_tech = x_in['technology'] # [variable_cost, unit_capacity, investment, availability]
             max_capcacity = input_tech[:,1] * input_tech[:,2] * input_tech[:, 3]
             total_demand = input_demand[:,0].sum()
+            
 
             production_out = self.proportional_completion(p_hat = production_out.squeeze(1), 
                                         p_max = max_capcacity, 
@@ -285,8 +297,9 @@ def save_trained_model(model, save_path, name, config):
 def main(base_path, hidden_channels, learning_rate,
         n_epochs = 200, n_layers = 5, loss_mask=False, 
         logging = False, use_investment_as_feature = False, 
-        add_self_loop = True,use_const_violation_loss = True,repair = True, save_model = False, save_path = ".",
-          save_model_name = "SaveModel"):
+        add_self_loop = True,use_const_violation_loss = True,
+        repair = True, save_model = False, topology = FULLY_CONNECTED,
+        save_path = ".", save_model_name = "SaveModel"):
     
     node_feat, edge_index, gt, flow_loc_mapping,_ = build_hetero_graph(base_path, use_investment_as_feature)
 
@@ -310,37 +323,25 @@ def main(base_path, hidden_channels, learning_rate,
     tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(tech_features, loc_features, demand_features, flow_features)
 
     production_gt, flow_gt = scaler.normalize_node_gt(production_gt, flow_gt)
+    scaled_node_feat = {
+        'technology': tech_features,
+        'location': loc_features,
+        'demand': demand_features,
+        'flow': flow_features
+    }
+
+    scaled_gt = {
+        'production': production_gt,
+        'flow': flow_gt,
+        'p_loss': p_loss_gt
+    }
     
     total_time = demand_features.shape[0]
 
     # Create a hetero graph
-    graph_list = []
-
-    for t in range(total_time):
-        data = HeteroData()
-        data['technology'].x = tech_features[t]
-        data['technology'].num_nodes = tech_features[t].size(0)
-        data['location'].x = loc_features
-        data['location'].num_nodes = loc_features.size(0)
-        data['demand'].x = demand_features[t].unsqueeze(1)  # for current time t
-        data['demand'].num_nodes = demand_features[t].shape[0]
-        data['flow'].x = flow_features
-        data['flow'].num_nodes = flow_features.size(0)
-
-        data['technology', 'powers', 'location'].edge_index = tech2loc_index
-        data['location', 'powered_by', 'technology'].edge_index = tech2loc_index[[1, 0]]  # reverse
-        data['location', 'feeds', 'demand'].edge_index = loc2demand_index
-        data['demand', 'fed_by', 'location'].edge_index = loc2demand_index[[1, 0]]  # reverse
-        data['flow', 'connected_to', 'location'].edge_index = flow2loc_index
-        data['location', 'connected_from', 'flow'].edge_index = loc2flow_index
-
-
-        data['technology'].y = production_gt[t]  # shape: (num_tech_nodes, 1)
-        data['flow'].y = flow_gt[t]              # shape: (num_flow_nodes, 1)
-        data['location'].y = p_loss_gt[t]        # shape: (num_location_nodes, 1)
-        graph_list.append(data)
-
-
+    graph_list = build_graph_list(scaled_node_feat, edge_index, scaled_gt, total_time, topology)
+    metadata = graph_list[0].metadata()
+    print(f"METADATA: {metadata}")
     test_data = graph_list[-1]
     graph_list = graph_list[:-1]
     
@@ -352,10 +353,10 @@ def main(base_path, hidden_channels, learning_rate,
     test_loader = DataLoader(test_graphs, batch_size=32)
 
 
-    model = HeteroGNN(hidden_channels=hidden_channels, num_layers=n_layers, 
-                      repair = repair,
-                        add_self_loops=add_self_loop,
-                        use_investment_as_feature=use_investment_as_feature)
+    model = HeteroGNN(hidden_channels=hidden_channels, metadata = metadata,
+                      num_layers=n_layers, repair = repair,
+                      add_self_loops=add_self_loop,
+                      use_investment_as_feature=use_investment_as_feature)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay= 1e-4)
 
@@ -492,7 +493,7 @@ def main(base_path, hidden_channels, learning_rate,
     return training_end - training_start
 
 
-def evaluate_model(base_path, model_path, training_time,repair):
+def evaluate_model(base_path, model_path, training_time,repair, topology):
     print("--------------------------------")
     print(f"Runnin evaluation using model {model_path} on dataset {base_path}")
 
@@ -500,18 +501,6 @@ def evaluate_model(base_path, model_path, training_time,repair):
     config = checkpoint['config']
     print(f"Model trained on {config['dataset']}")
     state_dict = checkpoint['model_state_dict']
-
-    model = HeteroGNN(
-        hidden_channels=config['hidden_channels'],
-        num_layers=config['n_layers'],
-        add_self_loops=config['add_self_loop'],
-        repair=config['repair'],
-        use_investment_as_feature=config['use_investment_as_feature']
-    )
-    model.load_state_dict(state_dict)
-    model.eval()
-    model.repair = repair
-
     # load data
     node_feat, edge_index, gt, flow_loc_mapping,scalars = build_hetero_graph(base_path, config['use_investment_as_feature'])
 
@@ -537,30 +526,57 @@ def evaluate_model(base_path, model_path, training_time,repair):
     production_gt, flow_gt = scaler.normalize_node_gt(production_gt_raw, flow_gt_raw)
 
     total_time = demand_features.shape[0]
-    graph_list = []
+    scaled_node_feat = {
+        'technology': tech_features,
+        'location': loc_features,
+        'demand': demand_features,
+        'flow': flow_features
+    }
 
-    for t in range(total_time):
-        data = HeteroData()
-        data['technology'].x = tech_features[t]
-        data['technology'].num_nodes = tech_features[t].size(0)
-        data['location'].x = loc_features
-        data['location'].num_nodes = loc_features.size(0)
-        data['demand'].x = demand_features[t].unsqueeze(1)
-        data['demand'].num_nodes = demand_features[t].shape[0]
-        data['flow'].x = flow_features
-        data['flow'].num_nodes = flow_features.size(0)
+    scaled_gt = {
+        'production': production_gt,
+        'flow': flow_gt,
+        'p_loss': p_loss_gt
+    }
+    
+    graph_list = build_graph_list(node_feat, edge_index, gt, total_time, topology)
+    # graph_list = []
 
-        data['technology', 'powers', 'location'].edge_index = tech2loc_index
-        data['location', 'powered_by', 'technology'].edge_index = tech2loc_index[[1, 0]]
-        data['location', 'feeds', 'demand'].edge_index = loc2demand_index
-        data['demand', 'fed_by', 'location'].edge_index = loc2demand_index[[1, 0]]
-        data['flow', 'connected_to', 'location'].edge_index = flow2loc_index
-        data['location', 'connected_from', 'flow'].edge_index = loc2flow_index
+    # for t in range(total_time):
+    #     data = HeteroData()
+    #     data['technology'].x = tech_features[t]
+    #     data['technology'].num_nodes = tech_features[t].size(0)
+    #     data['location'].x = loc_features
+    #     data['location'].num_nodes = loc_features.size(0)
+    #     data['demand'].x = demand_features[t].unsqueeze(1)
+    #     data['demand'].num_nodes = demand_features[t].shape[0]
+    #     data['flow'].x = flow_features
+    #     data['flow'].num_nodes = flow_features.size(0)
 
-        data['technology'].y = production_gt[t]
-        data['flow'].y = flow_gt[t]
-        data['location'].y = p_loss_gt[t]
-        graph_list.append(data)
+    #     data['technology', 'powers', 'location'].edge_index = tech2loc_index
+    #     data['location', 'powered_by', 'technology'].edge_index = tech2loc_index[[1, 0]]
+    #     data['location', 'feeds', 'demand'].edge_index = loc2demand_index
+    #     data['demand', 'fed_by', 'location'].edge_index = loc2demand_index[[1, 0]]
+    #     data['flow', 'connected_to', 'location'].edge_index = flow2loc_index
+    #     data['location', 'connected_from', 'flow'].edge_index = loc2flow_index
+
+    #     data['technology'].y = production_gt[t]
+    #     data['flow'].y = flow_gt[t]
+    #     data['location'].y = p_loss_gt[t]
+    #     graph_list.append(data)
+  
+    metadata = graph_list[0].metadata()
+    model = HeteroGNN(
+        hidden_channels=config['hidden_channels'],
+        metadata = metadata,
+        num_layers=config['n_layers'],
+        add_self_loops=config['add_self_loop'],
+        repair=config['repair'],
+        use_investment_as_feature=config['use_investment_as_feature']
+    )
+    model.load_state_dict(state_dict)
+    model.eval()
+    model.repair = repair
 
     train_data, test_data = train_test_split(graph_list, test_size=0.2, random_state=42)
     train_data, val_data = train_test_split(train_data, test_size=0.1, random_state=42)
@@ -710,25 +726,26 @@ if __name__ == "__main__":
     Set logging to False, to not log anything to wandb, only show these logs in the terminal locally.
 
     '''
-    base_path = "Instances/2Nodes-ren"
-
+    base_path = "Instances/2Nodes-no-ren"
+    TOPOLOGY = FULLY_CONNECTED
     training_time = main(base_path,
-         learning_rate=0.01,
-         hidden_channels= 32,
-         n_epochs = 50,
-         n_layers = 4,
+         learning_rate=0.005,
+         hidden_channels= 64,
+         n_epochs = 15,
+         n_layers = 3,
          loss_mask=False,
          logging=False,
          use_investment_as_feature = True,
-         add_self_loop= True,
+         add_self_loop= False,
          use_const_violation_loss = False,
-         repair = False,
+         repair = True,
          save_model = True,
+         topology = TOPOLOGY, # FULLY_CONNECTED, PHYSICAL_CONNECTED 
          save_path= "../",
          save_model_name = "GNNModel-3Nodes-ren")
 
     # base_path = "Instances/4Nodes-ren-1-cycle"
-    evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = False)
+    evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = True, topology = TOPOLOGY)
 
 
 '''

@@ -9,6 +9,8 @@ import json
 import os
 from torch_geometric.data import HeteroData
 
+from utils import *
+
 
 
 # TRANSMISSION_LINE_PATH = "case_studies/stylized_EU/inputs/transmission_lines.csv"
@@ -617,7 +619,95 @@ def build_hetero_graph(base_path, use_investment_as_feature = False, plot = Fals
     
 
 
+def fully_connect(num_src, num_dst):
+    src = torch.arange(num_src).repeat_interleave(num_dst)
+    dst = torch.arange(num_dst).repeat(num_src)
+    return torch.stack([src, dst], dim=0)
 
+def build_graph_list(node_feat, edge_index, gt,total_time, topology):
+    tech_features = node_feat['technology']
+    loc_features = node_feat['location']
+    demand_features = node_feat['demand']
+    flow_features = node_feat['flow']
+
+
+    tech2loc_index = edge_index['tech2loc']
+    flow2loc_index = edge_index['flow2loc']
+    loc2flow_index = edge_index['loc2flow']
+    loc2demand_index = edge_index['loc2demand']
+
+    production_gt = gt['production']
+    flow_gt = gt['flow']
+    p_loss_gt = gt['p_loss']
+
+    # Start building graph
+    graph_list = []
+
+    if topology == FULLY_CONNECTED: 
+        node_types = ['technology', 'location', 'demand', 'flow']
+
+        for t in range(total_time):
+            data = HeteroData()
+            data['technology'].x = tech_features[t]
+            data['technology'].num_nodes = tech_features[t].size(0)
+
+            data['location'].x = loc_features
+            data['location'].num_nodes = loc_features.size(0)
+
+            data['demand'].x = demand_features[t].unsqueeze(1)
+            data['demand'].num_nodes = demand_features[t].shape[0]
+
+            data['flow'].x = flow_features
+            data['flow'].num_nodes = flow_features.size(0)
+
+            # ---- fully connect every (src_type, dst_type) pair ----
+            num_nodes = {
+                'technology': data['technology'].num_nodes,
+                'location':   data['location'].num_nodes,
+                'demand':     data['demand'].num_nodes,
+                'flow':       data['flow'].num_nodes,
+            }
+
+            for src_type in node_types:
+                for dst_type in node_types:
+                    edge_idx = fully_connect(num_nodes[src_type], num_nodes[dst_type])
+
+                    # Give each relation a unique, stable name
+                    rel = f'{src_type}_to_{dst_type}'
+                    data[(src_type, rel, dst_type)].edge_index = edge_idx
+
+            # ---- targets (same as your original) ----
+            data['technology'].y = production_gt[t]     # (num_tech_nodes, 1)
+            data['flow'].y       = flow_gt[t]           # (num_flow_nodes, 1)
+            data['location'].y   = p_loss_gt[t]         # (num_location_nodes, 1)
+
+            graph_list.append(data)
+
+    else:
+        for t in range(total_time):
+            data = HeteroData()
+            data['technology'].x = tech_features[t]
+            data['technology'].num_nodes = tech_features[t].size(0)
+            data['location'].x = loc_features
+            data['location'].num_nodes = loc_features.size(0)
+            data['demand'].x = demand_features[t].unsqueeze(1)  # for current time t
+            data['demand'].num_nodes = demand_features[t].shape[0]
+            data['flow'].x = flow_features
+            data['flow'].num_nodes = flow_features.size(0)
+
+            data['technology', 'powers', 'location'].edge_index = tech2loc_index
+            data['location', 'powered_by', 'technology'].edge_index = tech2loc_index[[1, 0]]  # reverse
+            data['location', 'feeds', 'demand'].edge_index = loc2demand_index
+            data['demand', 'fed_by', 'location'].edge_index = loc2demand_index[[1, 0]]       # reverse
+            data['flow', 'connected_to', 'location'].edge_index = flow2loc_index
+            data['location', 'connected_from', 'flow'].edge_index = loc2flow_index
+
+            data['technology'].y = production_gt[t]  # shape: (num_tech_nodes, 1)
+            data['flow'].y = flow_gt[t]              # shape: (num_flow_nodes, 1)
+            data['location'].y = p_loss_gt[t]        # shape: (num_location_nodes, 1)
+            graph_list.append(data)
+
+    return graph_list
 
 if __name__ == "__main__":
     BASE_PATH = "instances/4Nodes-ren-2-cycle"

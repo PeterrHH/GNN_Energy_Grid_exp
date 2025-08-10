@@ -132,14 +132,11 @@ def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pr
 
 def calculate_loss(pred_prod, pred_flow, batch, batch_size, loc2flow, tech2loc, loss_mask=False):
     '''
-    
     batch['technology'].y, batch['flow'].y, 
     batch['flow'].x, batch['demand'].x,batch['technology'].x,
     batch['location', 'connected_from', 'flow'].edge_index,
     batch['technology', 'powers', 'location'].edge_index
     '''
-    # print(f"IN CALCULATE LOSS loc2flow: {loc2flow.shape} tech2loc: {tech2loc.shape} batch size {batch_size}")
-    
     gt_prod = batch['technology'].y
     gt_flow = batch['flow'].y
 
