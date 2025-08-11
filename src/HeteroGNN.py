@@ -319,7 +319,7 @@ def main(base_path, hidden_channels, learning_rate,
     flow_gt = gt['flow']
     p_loss_gt = gt['p_loss']
 
-    scaler = HeteroGraphScalar(scale = False)
+    scaler = HeteroGraphScalar(scale = True)
     tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(tech_features, loc_features, demand_features, flow_features)
 
     production_gt, flow_gt = scaler.normalize_node_gt(production_gt, flow_gt)
@@ -518,13 +518,15 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
     p_loss_gt = gt['p_loss']
 
     # Normalize
-    scaler = HeteroGraphScalar(scale=False)
+    scaler = HeteroGraphScalar(scale=True)
     
     tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(
         tech_features, loc_features, demand_features, flow_features
     )
+    
     production_gt, flow_gt = scaler.normalize_node_gt(production_gt_raw, flow_gt_raw)
-
+    print(f"prod before: {production_gt_raw[10]} prod after: {production_gt[10]}")
+    print(f"flow before: {flow_gt_raw[10]} flow after: {flow_gt[10]}")
     total_time = demand_features.shape[0]
     scaled_node_feat = {
         'technology': tech_features,
@@ -539,7 +541,7 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
         'p_loss': p_loss_gt
     }
     
-    graph_list = build_graph_list(node_feat, edge_index, gt, total_time, topology)
+    graph_list = build_graph_list(scaled_node_feat, edge_index, scaled_gt, total_time, topology)
     # graph_list = []
 
     # for t in range(total_time):
@@ -574,6 +576,7 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
         repair=config['repair'],
         use_investment_as_feature=config['use_investment_as_feature']
     )
+    
     model.load_state_dict(state_dict)
     model.eval()
     model.repair = repair
@@ -724,21 +727,21 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
 if __name__ == "__main__":
     '''
     Set logging to False, to not log anything to wandb, only show these logs in the terminal locally.
-
     '''
+
     base_path = "Instances/2Nodes-no-ren"
     TOPOLOGY = FULLY_CONNECTED
     training_time = main(base_path,
-         learning_rate=0.005,
+         learning_rate=0.01,
          hidden_channels= 64,
-         n_epochs = 15,
+         n_epochs = 30,
          n_layers = 3,
          loss_mask=False,
          logging=False,
          use_investment_as_feature = True,
-         add_self_loop= False,
-         use_const_violation_loss = False,
-         repair = True,
+         add_self_loop= True,
+         use_const_violation_loss = True,
+         repair = False,
          save_model = True,
          topology = TOPOLOGY, # FULLY_CONNECTED, PHYSICAL_CONNECTED 
          save_path= "../",
@@ -746,9 +749,3 @@ if __name__ == "__main__":
 
     # base_path = "Instances/4Nodes-ren-1-cycle"
     evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = True, topology = TOPOLOGY)
-
-
-'''
-Goal:
-Only eval using repair,
-'''

@@ -84,9 +84,6 @@ def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pr
     loc_count = demand.shape[1]    
     tech_count = technology.shape[1]
     flow_count = F
-    # print(f"loc_count {loc_count} tech_count {tech_count} flow_count {flow_count} FLOW SHAPE {flow.shape}")
-
-
 
     prod = pred_prod  # shape (T*|N|, 1)
     demand = demand # shape (T(|N|, 1)

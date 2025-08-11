@@ -737,10 +737,10 @@ if __name__ == "__main__":
     print(f"Location Features: {node_feat['location'].shape}")
     print(f"Demand Features: {node_feat['demand'].shape}")
     print(f"Flow Features: {node_feat['flow'].shape}")
-    print(f"Tech to Location Index: {edge_feat['tech2loc'].shape}")
-    print(f"Flow to Location Index: {edge_feat['flow2loc'].shape}")
-    print(f"Location to Flow Index: {edge_feat['loc2flow'].shape}")
-    print(f"Location to Demand Index: {edge_feat['loc2demand'].shape}")
+    print(f"Tech to Location Index: {edge_feat['tech2loc']}")
+    print(f"Flow to Location Index: {edge_feat['flow2loc']}")
+    print(f"Location to Flow Index: {edge_feat['loc2flow']}")
+    print(f"Location to Demand Index: {edge_feat['loc2demand']}")
     print(f"Production GT: {gt['production'].shape}")
     print(f"Flow GT: {gt['flow'].shape}")
 
@@ -753,3 +753,6 @@ if __name__ == "__main__":
 
     # print(f"Total production at t = 0: {total_production_t0.item():.4f}")
     # print(f"Total demand at t = 0: {total_demand_t0.item():.4f}")
+    print(f"Flow Feat: {node_feat['flow']}")
+
+
