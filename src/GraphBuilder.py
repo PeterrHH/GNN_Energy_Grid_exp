@@ -754,5 +754,6 @@ if __name__ == "__main__":
     # print(f"Total production at t = 0: {total_production_t0.item():.4f}")
     # print(f"Total demand at t = 0: {total_demand_t0.item():.4f}")
     print(f"Flow Feat: {node_feat['flow']}")
+    print(f"Flow GT: {gt['flow']}")
 
 

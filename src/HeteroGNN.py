@@ -618,7 +618,7 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
             flow=flow_feat.squeeze(-1),  # shape: [1, N_edges]
             pred_prod=pred_prod.squeeze(-1),  # shape: [N_tech, 1]
             pred_flow=pred_flow.squeeze(-1),  # shape: [N_edges, 1]
-            print_summary=False,  # Set to True to print the summary
+            print_summary=True,  # Set to True to print the summary
         )
 
         is_feasible = all(violation_summary.values())
@@ -734,7 +734,7 @@ if __name__ == "__main__":
     training_time = main(base_path,
          learning_rate=0.01,
          hidden_channels= 64,
-         n_epochs = 30,
+         n_epochs = 20,
          n_layers = 3,
          loss_mask=False,
          logging=False,

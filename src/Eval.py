@@ -346,7 +346,7 @@ def summarize_feasibility(demand: torch.Tensor,
 
     Output: Whether the 5 constraint is feasible or not.
     """
-    
+    err = 0.1
     if tech_feat.shape[1] != 4: 
         print(f"Check is only valid with investment info tech_feat shape {tech_feat.shape}")
         return
@@ -365,7 +365,9 @@ def summarize_feasibility(demand: torch.Tensor,
 
     # 3) Check sum(p) = total_demand
     sum_p = pred_prod.sum()
-    balance_violation = (sum_p - total_demand) < 0
+    balance_violation = sum_p - total_demand <= err
+    diff         = (sum_p - total_demand)
+    # balance_violation       = torch.isclose(sum_p, total_demand, atol=err, rtol=0.0).item()
 
     # 4) Check edge flows ∈ [0, capacity]
     # TODO: NEED TO CHANGE AFTER changing fllow representation
@@ -393,12 +395,14 @@ def summarize_feasibility(demand: torch.Tensor,
             if len(above_max_idx):
                 print(f"  • p_i > p_max at nodes: {above_max_idx.tolist()}")
         else:
-            print("  ✓ All p_i ∈ [0, p_max].")
+            pass
+            #print("  ✓ All p_i ∈ [0, p_max].")
 
-        if balance_violation:
-            print(f"  • Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f}")
+        if not balance_violation:
+            print(f"  • VIO: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}")
         else:
-            print("  ✓ Sum(p) = total_demand.")
+            pass
+            #print(f"  ✓ GOOD: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}. ")
 
         if len(above_export_indices) or len(below_import_indices):
             print("  • Flow violations:")
@@ -409,7 +413,8 @@ def summarize_feasibility(demand: torch.Tensor,
                 for idx in below_import_indices:
                     print(f"    - Flow[{idx}] = {pred_flow[idx].item():.4f} < -Import cap = {-import_cap[idx].item():.4f}")
         else:
-            print("  ✓ All flows ∈ [−import_cap, export_cap].")
+            pass
+            #print("  ✓ All flows ∈ [−import_cap, export_cap].")
 
     
     return {
