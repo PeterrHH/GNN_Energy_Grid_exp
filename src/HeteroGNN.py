@@ -402,7 +402,7 @@ def main(base_path, hidden_channels, learning_rate,
                 # FLow
                 loss = prod_loss + flow_loss + flow_cap_loss + balance_loss
             else:
-                loss = prod_loss + 10*flow_loss
+                loss = prod_loss + flow_loss
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
