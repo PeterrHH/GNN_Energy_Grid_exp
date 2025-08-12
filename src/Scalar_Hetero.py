@@ -254,7 +254,7 @@ class HeteroGraphScalar:
         self,
         scale: bool = True,
         base_strategy: str = "percentile",
-        q: float = 50.0,
+        q: float = 60.0,
         fixed_base: Optional[float] = None,
         min_base: float = 1e-6
     ):

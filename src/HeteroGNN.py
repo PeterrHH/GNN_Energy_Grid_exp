@@ -335,7 +335,8 @@ def main(base_path, hidden_channels, learning_rate,
         'flow': flow_gt,
         'p_loss': p_loss_gt
     }
-    
+    print(f"Scaled tech_features shape: {tech_features[1,:,:]}, loc_features shape: {loc_features}, demand_features shape: {demand_features[1,:]}, flow_features shape: {flow_features}\n")
+    print(f"Scaled production_gt shape: {production_gt[1,:,:]}, flow_gt shape: {flow_gt[1,:,:]}, p_loss_gt shape: {p_loss_gt[1,:,:]}\n")
     total_time = demand_features.shape[0]
 
     # Create a hetero graph
@@ -401,7 +402,7 @@ def main(base_path, hidden_channels, learning_rate,
                 # FLow
                 loss = prod_loss + flow_loss + flow_cap_loss + balance_loss
             else:
-                loss = prod_loss + flow_loss
+                loss = prod_loss + 10*flow_loss
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -729,7 +730,7 @@ if __name__ == "__main__":
     Set logging to False, to not log anything to wandb, only show these logs in the terminal locally.
     '''
 
-    base_path = "Instances/2Nodes-no-ren"
+    base_path = "Instances/3Nodes-no-ren-cycle"
     TOPOLOGY = FULLY_CONNECTED
     training_time = main(base_path,
          learning_rate=0.01,
@@ -741,11 +742,13 @@ if __name__ == "__main__":
          use_investment_as_feature = True,
          add_self_loop= True,
          use_const_violation_loss = True,
-         repair = False,
+         repair = True,
          save_model = True,
          topology = TOPOLOGY, # FULLY_CONNECTED, PHYSICAL_CONNECTED 
          save_path= "../",
          save_model_name = "GNNModel-3Nodes-ren")
-
+    # base_path = "Instances/4Nodes-ren-1-cycle"
+    # evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = False, topology = TOPOLOGY)
+    # print("==================================REPAIR======================")
     # base_path = "Instances/4Nodes-ren-1-cycle"
     evaluate_model(base_path, "../GNNModel-3Nodes-ren.pt", training_time, repair = True, topology = TOPOLOGY)

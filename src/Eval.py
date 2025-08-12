@@ -360,9 +360,9 @@ def summarize_feasibility(demand: torch.Tensor,
 
     # 2) Check p bounds
     pred_prod = pred_prod.squeeze(-1)
-    below_min_idx = (pred_prod < 0).nonzero(as_tuple=False).squeeze(-1)  # < 0
-    above_max_idx = (pred_prod > p_max).nonzero(as_tuple=False).squeeze(-1)
-
+    below_min_idx = (pred_prod < -err).nonzero(as_tuple=False).squeeze(-1)  # < 0
+    above_max_idx = (pred_prod > p_max+err).nonzero(as_tuple=False).squeeze(-1)
+    #print(f"Pred)prod {pred_prod} p_max {p_max} total_demand {total_demand}")
     # 3) Check sum(p) = total_demand
     sum_p = pred_prod.sum()
     balance_violation = sum_p - total_demand <= err
@@ -377,8 +377,8 @@ def summarize_feasibility(demand: torch.Tensor,
     pos_mask = pred_flow > 0
     neg_mask = pred_flow < 0
     #print(f"pred_flow {pred_flow} import cap {import_cap} export cap {export_cap} ")
-    above_export_cap = (pred_flow > export_cap) #Inddex where flow exceeds export capacity
-    below_import_cap = (pred_flow < import_cap) # Index whenre flow exceeds import capacity
+    above_export_cap = (pred_flow > export_cap+err) #Inddex where flow exceeds export capacity
+    below_import_cap = (pred_flow < import_cap-err) # Index whenre flow exceeds import capacity
     #print(f"above_export_cap {above_export_cap} below_import_cap {below_import_cap}")
     
     above_export_indices = (above_export_cap.nonzero(as_tuple=False).squeeze(-1)).tolist()
@@ -388,23 +388,26 @@ def summarize_feasibility(demand: torch.Tensor,
 
     # ─── Print a short summary ───
     if print_summary:
-        print("── Feasibility Check (no‐ramp) ──")
+  
         if len(below_min_idx) or len(above_max_idx):
+            print("── Feasibility Check (no‐ramp) ──")
             if len(below_min_idx):
-                print(f"  • p_i < 0 at nodes: {below_min_idx.tolist()}")
+                print(f"  • p_i < 0 at nodes: {below_min_idx.tolist()} pred prod {pred_prod} p max {p_max}")
             if len(above_max_idx):
-                print(f"  • p_i > p_max at nodes: {above_max_idx.tolist()}")
+                print(f"  • p_i > p_max at nodes: {above_max_idx.tolist()} pred prod {pred_prod} p max {p_max}")
         else:
             pass
             #print("  ✓ All p_i ∈ [0, p_max].")
 
         if not balance_violation:
+            print("── Feasibility Check (no‐ramp) ──")
             print(f"  • VIO: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}")
         else:
             pass
             #print(f"  ✓ GOOD: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}. ")
 
         if len(above_export_indices) or len(below_import_indices):
+            print("── Feasibility Check (no‐ramp) ──")
             print("  • Flow violations:")
             if len(above_export_indices):
                 for idx in above_export_indices:
@@ -414,7 +417,7 @@ def summarize_feasibility(demand: torch.Tensor,
                     print(f"    - Flow[{idx}] = {pred_flow[idx].item():.4f} < -Import cap = {-import_cap[idx].item():.4f}")
         else:
             pass
-            #print("  ✓ All flows ∈ [−import_cap, export_cap].")
+            #print(f"  ✓ All flows {pred_flow} ∈ [−import_cap , export_cap] [{import_cap},{export_cap}].")
 
     
     return {
