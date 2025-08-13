@@ -139,7 +139,8 @@ class HeteroGNN(torch.nn.Module):
         self.encoder = nn.ModuleDict({
                 nt: nn.Sequential(
                     nn.Linear(self.input_dim[nt], hidden_channels),
-                    nn.ReLU() if nt != 'flow' else nn.Tanh(),
+                    # nn.ReLU() if nt != 'flow' else nn.Tanh(),
+                    nn.ReLU() if nt != 'flow' else nn.Identity(),
                     nn.Dropout(self.dropout_rate)
                 )
                 for nt in self.node_type
@@ -152,29 +153,9 @@ class HeteroGNN(torch.nn.Module):
                 for et in self.edge_type
             }, aggr='sum')
 
-        # self.convs_list = nn.ModuleList([
-        #     HeteroConv({
-        #     ('technology', 'powers', 'location'): self.make_subsequent_layers(),
-        #     ('location', 'powered_by', 'technology'): self.make_subsequent_layers(),
-        #     ('location', 'feeds', 'demand'): self.make_subsequent_layers(),
-        #     ('demand', 'fed_by', 'location'): self.make_subsequent_layers(),
-        #     ('flow', 'connected_to', 'location'): self.make_subsequent_layers(),
-        #     ('location', 'connected_from', 'flow'): self.make_subsequent_layers(),
-        # }, aggr='sum') for _ in range(num_layers)
-        # ])
-
         self.convs_list = nn.ModuleList(
             [make_conv(in_hidden=False)] + [make_conv(in_hidden=True) for _ in range(num_layers - 1)]
         )
-
-
-
-        # self.self_loop_weights = nn.ParameterDict({ 
-        #     'technology': nn.Parameter(torch.tensor(1.0)),  
-        #     'location': nn.Parameter(torch.tensor(1.0)),
-        #     'demand': nn.Parameter(torch.tensor(1.0)),
-        #     'flow': nn.Parameter(torch.tensor(1.0)),
-        # })
 
         self.self_loop_weights = nn.ParameterDict({
             nt: nn.Parameter(torch.tensor(1.0)) for nt in self.node_type
@@ -187,6 +168,9 @@ class HeteroGNN(torch.nn.Module):
         self.flow_lin = nn.Sequential(
             nn.Linear(hidden_channels, 1),
         )
+
+        self.logvar_prod = nn.Parameter(torch.zeros(1))
+        self.logvar_flow = nn.Parameter(torch.zeros(1))
 
     def make_first_layer(self):
         return SAGEConv(-1, self.hidden_channels)
@@ -209,8 +193,8 @@ class HeteroGNN(torch.nn.Module):
         # Add weighted self loop to its encoded feature
         for i, conv in enumerate(self.convs_list):
             x_out = conv(x_dict, edge_index_dict)
-            
-            x_out = {k: x.relu() if k != 'flow' else x.tanh() for k, x in x_out.items()}
+            x_out = {k: x.relu() if k != 'flow' else x for k, x in x_out.items()}
+            # x_out = {k: x.relu() if k != 'flow' else x.tanh() for k, x in x_out.items()}
             if self.add_self_loops:
                 x_dict = {
                     k: self.self_loop_weights[k]*x_encoded[k] + x_out[k]
@@ -397,7 +381,8 @@ def main(base_path, hidden_channels, learning_rate,
             prod_loss, flow_loss, flow_cap_loss, balance_loss, total_loss = calculate_loss(out_prod, out_flow, batch, batch_size =batch_size,
                                                                  loc2flow = loc2flow_index,
                                                                  tech2loc = tech2loc_index)
-            
+            wp = torch.exp(-model.logvar_prod)
+            wf = torch.exp(-model.logvar_flow)
             if use_const_violation_loss:
                 # FLow
                 loss = prod_loss + flow_loss + flow_cap_loss + balance_loss
@@ -417,7 +402,9 @@ def main(base_path, hidden_channels, learning_rate,
                                                                                 scaler, loss_mask=loss_mask, 
                                                                                 loc2flow = loc2flow_index,
                                                                                 tech2loc = tech2loc_index,
-                                                                                use_investment=use_investment_as_feature)
+                                                                                 use_investment=use_investment_as_feature)
+        wp = torch.exp(-model.logvar_prod)
+        wf = torch.exp(-model.logvar_flow) 
         if use_const_violation_loss:
             total_eval_loss = eval_prod_loss + eval_flow_loss + eval_flowcap_loss*10 + eval_balance_loss
         else:
@@ -430,7 +417,8 @@ def main(base_path, hidden_channels, learning_rate,
             'train_prod_loss': ave_prod_loss,
             'train_flow_loss': ave_flow_loss,
         }, step=epoch)
-        print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} Balance: {eval_balance_loss:.4f} Flow Cap Loss: {eval_flowcap_loss:.4f}')
+        # print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} Balance: {eval_balance_loss:.4f} Flow Cap Loss: {eval_flowcap_loss:.4f}')
+        print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} ProdW: {wp} FlowW: {wf}')
     training_end = time.time()
 
     model.eval()
@@ -730,19 +718,19 @@ if __name__ == "__main__":
     Set logging to False, to not log anything to wandb, only show these logs in the terminal locally.
     '''
 
-    base_path = "Instances/3Nodes-no-ren-cycle"
+    base_path = "Instances/2Nodes-ren"
     TOPOLOGY = FULLY_CONNECTED
     training_time = main(base_path,
-         learning_rate=0.01,
+         learning_rate=0.005,
          hidden_channels= 64,
-         n_epochs = 20,
+         n_epochs = 1,
          n_layers = 3,
          loss_mask=False,
          logging=False,
          use_investment_as_feature = True,
          add_self_loop= True,
-         use_const_violation_loss = True,
-         repair = True,
+         use_const_violation_loss = False,
+         repair = False,
          save_model = True,
          topology = TOPOLOGY, # FULLY_CONNECTED, PHYSICAL_CONNECTED 
          save_path= "../",

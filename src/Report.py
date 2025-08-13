@@ -12,7 +12,7 @@ class Report:
 
     def add_instance(self, variable_cost, loss_of_load, instance_idx, production, production_gt,
                      flow, flow_gt, p_loss_gt, demand_feat, feasible):
-
+        print(f"Adding instance LL is {loss_of_load}")
         prod = production.squeeze()
         prod_gt = production_gt.squeeze()
     

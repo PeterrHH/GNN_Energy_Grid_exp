@@ -290,7 +290,7 @@ def evaluate_mlp(model, loader, scalar, edge_index):
 
 
 if __name__ == "__main__":
-    base_path = "Instances/3Nodes-no-ren-cycle"  # Change to your instance path
+    base_path = "Instances/2Nodes-ren"  # Change to your instance path
     # calculate training time give me code
     import time
     now = time.time()
