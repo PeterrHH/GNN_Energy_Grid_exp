@@ -62,28 +62,78 @@ def build_edge_mapping_from_loc2flow(loc2flow, num_flow_nodes):
         torch.tensor(edge_sign, dtype=torch.float)
     )
 
-
-def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pred_flow, batch_size):
-    '''
-    Compute Constraint Violation Loss
-    '''
-    
+def compute_loss_of_load(demand,technology,flow, pred_prod, pred_flow, loc2flow, tech2loc, batch_size):
     N =  demand.shape[0] // batch_size
     M = technology.shape[0] // batch_size
-    F = flow.shape[0] // batch_size
+    W = flow.shape[0] // batch_size
 
     demand = demand.view(batch_size,N)
     technology = technology.view(batch_size, M ,-1)
-    flow = flow.view(batch_size, F, -1)[0]
+    flow = flow.view(batch_size, W, -1)[0]
 
-    pred_flow = pred_flow.view(batch_size, F)
+    loc_count = demand.shape[1]    
+    tech_count = technology.shape[1]
+    flow_count = W
+
+    pred_flow = pred_flow.view(batch_size, W)
     pred_prod = pred_prod.view(batch_size, M)
+    edge_to_flow_index, edge_sign = build_edge_mapping_from_loc2flow(loc2flow, flow_count)
+    
+    flow_expanded = pred_flow[:,edge_to_flow_index] * edge_sign  # [B, 6]
+
+
+
+    A = build_incidence(loc2flow, num_nodes=loc_count)  # shape [3, 3]
+
+    # print(f"TECH2LOC shape {tech2loc.shape} loc_count {loc_count} tech_count {tech_count}")
+    P = build_prod_mapping(tech2loc, num_nodes=loc_count, num_techs=tech_count)
+
+
+    A_dense = A.to_dense()         # shape: [N, 6]
+    P_dense = P.to_dense()         # shape: [N, M]
+
+    # Step 1: Compute net inflow at each location
+    net_inflow = torch.einsum("ne,be->bn", A_dense, flow_expanded)  # [B, N]
+
+    
+    # Step 2: Compute local production at each location
+    loc_prod = torch.einsum("nm,bm->bn", P_dense, pred_prod)             # [B, N]
+    # print(f"loc_prod shape {loc_prod.shape} net_inflow shape {net_inflow.shape} demand shape {demand.shape}")
+    
+    # Step 3: Total supply = production + net inflow
+    total_supply = loc_prod + net_inflow                            # [B, N]
+
+    oversupply = torch.clamp(total_supply - demand, max = 0.0)  # [B, N], only positive deviations
+
+    loss_load_pred = demand - total_supply
+
+    return loss_load_pred
+    
+
+def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pred_flow, gt_loss_load ,batch_size):
+    '''
+    Compute Constraint Violation Loss
+    '''
+    '''
+    #print(f"IN Comp Balance Loss Prod {pred_prod} Flow {pred_flow}\n")
+    N =  demand.shape[0] // batch_size
+    M = technology.shape[0] // batch_size
+    W = flow.shape[0] // batch_size
+
+    demand = demand.view(batch_size,N)
+    technology = technology.view(batch_size, M ,-1)
+    flow = flow.view(batch_size, W, -1)[0]
+
+    pred_flow = pred_flow.view(batch_size, W)
+    pred_prod = pred_prod.view(batch_size, M)
+    
+    gt_loss_load = gt_loss_load.view(batch_size, -1)
 
 
     # print(f"-----------Test things ------------------")
     loc_count = demand.shape[1]    
     tech_count = technology.shape[1]
-    flow_count = F
+    flow_count = W
 
     prod = pred_prod  # shape (T*|N|, 1)
     demand = demand # shape (T(|N|, 1)
@@ -91,7 +141,7 @@ def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pr
     edge_to_flow_index, edge_sign = build_edge_mapping_from_loc2flow(loc2flow, flow_count)
     
     flow_expanded = pred_flow[:,edge_to_flow_index] * edge_sign  # [B, 6]
-
+    
     
 
     A = build_incidence(loc2flow, num_nodes=loc_count)  # shape [3, 3]
@@ -113,18 +163,19 @@ def compute_balance_loss(demand,technology,flow,loc2flow,tech2loc, pred_prod, pr
     # Step 3: Total supply = production + net inflow
     total_supply = loc_prod + net_inflow                            # [B, N]
 
-    # Step 4: Compute violation w.r.t. demand
-    # violation = (total_supply - demand) ** 2                      # [B, N]
+    oversupply = torch.clamp(total_supply - demand, max = 0.0)  # [B, N], only positive deviations
 
-    # # Step 5: Final loss
-    # loss_constraint = violation.mean()
+    loss_constraint = (oversupply.abs()).mean()
 
-    # loss_constraint = (total_supply)
-    # Alternative approach to compute oversupply
-    oversupply = torch.clamp(total_supply - demand, min = 0.0)  # [B, N], only positive deviations
-    loss_constraint = (oversupply ** 2).mean()
-
-    return loss_constraint
+    loss_load_pred = demand - total_supply
+    '''
+    gt_loss_load = gt_loss_load.view(batch_size, -1)
+    loss_load_pred = compute_loss_of_load(demand, technology, flow, 
+                                          pred_prod, pred_flow, 
+                                          loc2flow, tech2loc, batch_size)
+    loss_load_loss = F.mse_loss(gt_loss_load,loss_load_pred, reduction='mean')
+    # print(f"Loss Load Loss {loss_load_loss}\n")
+    return loss_load_loss
 
 
 def calculate_loss(pred_prod, pred_flow, batch, batch_size, loc2flow, tech2loc, loss_mask=False):
@@ -136,6 +187,7 @@ def calculate_loss(pred_prod, pred_flow, batch, batch_size, loc2flow, tech2loc, 
     '''
     gt_prod = batch['technology'].y
     gt_flow = batch['flow'].y
+    gt_loss_load = batch['location'].y
 
     flow_feat = batch['flow'].x
     demand_feat = batch['demand'].x
@@ -166,9 +218,13 @@ def calculate_loss(pred_prod, pred_flow, batch, batch_size, loc2flow, tech2loc, 
 
     total_flow = pred_flow.abs().sum()
     
-    balance_loss = compute_balance_loss(demand_feat,tech_feat, flow_feat, loc2flow, tech2loc, pred_prod, pred_flow, batch_size)
+    loss_load_loss = compute_balance_loss(demand_feat,tech_feat, 
+                                        flow_feat, loc2flow, 
+                                        tech2loc, pred_prod, 
+                                        pred_flow, gt_loss_load,
+                                        batch_size)
 
-    return prod_loss, flow_loss, violation_loss, balance_loss, total_flow
+    return prod_loss, flow_loss, violation_loss, loss_load_loss, total_flow
 
 
 
@@ -339,6 +395,7 @@ def summarize_feasibility(demand: torch.Tensor,
                               flow: torch.Tensor,
                               pred_prod: torch.Tensor,
                               pred_flow: torch.Tensor,
+                              loss_of_load: torch.Tensor,
                               tol: float = 1e-4,
                               print_summary: bool = False):
     """
@@ -367,6 +424,7 @@ def summarize_feasibility(demand: torch.Tensor,
     sum_p = pred_prod.sum()
     balance_violation = sum_p - total_demand <= err
     diff         = (sum_p - total_demand)
+    balance_violation = not torch.any(loss_of_load < -err) # any loss < err ->
     # balance_violation       = torch.isclose(sum_p, total_demand, atol=err, rtol=0.0).item()
 
     # 4) Check edge flows ∈ [0, capacity]
@@ -401,7 +459,7 @@ def summarize_feasibility(demand: torch.Tensor,
 
         if not balance_violation:
             print("── Feasibility Check (no‐ramp) ──")
-            print(f"  • VIO: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}")
+            print(f"  • VIO: Loss of load {loss_of_load} Err: {err}")
         else:
             pass
             #print(f"  ✓ GOOD: Sum(p) = {sum_p:.4f}, but total_demand = {total_demand:.4f} balance vio {diff:.4f} bool {bool(balance_violation)}. ")

@@ -2,6 +2,11 @@
 import torch
 from torch_scatter import scatter_add
 
+from HeteroGNN import build_hetero_graph, build_graph_list
+from Eval import calculate_loss
+from Scalar_Hetero import HeteroGraphScalar
+from utils import *
+
 # ---------- Endpoints and caps ----------
 def ends_from_flow2loc(flow2loc, num_flows: int) -> torch.Tensor:
     """flow2loc: [2, 2E] with pairs (flow_id, loc_id). Returns ends [E,2]=(A,B)."""
@@ -210,3 +215,99 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_graphs, batch_size=8, shuffle=True)
     first_batch = next(iter(train_loader))
     debug_alignment(first_batch, edge_index)
+
+
+def comp_b_check_validate(base_path, hidden_channels, learning_rate,
+        n_epochs = 200, n_layers = 5, loss_mask=False, 
+        logging = False, use_investment_as_feature = False, 
+        add_self_loop = True,use_const_violation_loss = True,
+        repair = True, save_model = False, topology = FULLY_CONNECTED):
+    print(f"BASE PATH: {base_path}")
+    node_feat, edge_index, gt, flow_loc_mapping,_ = build_hetero_graph(base_path, use_investment_as_feature)
+
+
+    tech_features = node_feat['technology']
+    loc_features = node_feat['location']
+    demand_features = node_feat['demand']
+    flow_features = node_feat['flow']
+
+
+    tech2loc_index = edge_index['tech2loc']
+    flow2loc_index = edge_index['flow2loc']
+    loc2flow_index = edge_index['loc2flow']
+    loc2demand_index = edge_index['loc2demand']
+
+    production_gt = gt['production']
+    flow_gt = gt['flow']
+    p_loss_gt = gt['p_loss']
+
+    # scaler = HeteroGraphScalar(scale = True)
+    # tech_features, loc_features, demand_features, flow_features = scaler.normalize_node_features(tech_features, loc_features, demand_features, flow_features)
+    # print(f"BEfore scailing, productiong GT {production_gt} Flow {flow_gt}\n")
+    # production_gt, flow_gt = scaler.normalize_node_gt(production_gt, flow_gt)
+    scaled_node_feat = {
+        'technology': tech_features,
+        'location': loc_features,
+        'demand': demand_features,
+        'flow': flow_features
+    }
+
+    scaled_gt = {
+        'production': production_gt,
+        'flow': flow_gt,
+        'p_loss': p_loss_gt
+    }
+    print(f"Scaled tech_features shape: {tech_features[1,:,:]}, loc_features shape: {loc_features}, demand_features shape: {demand_features[1,:]}, flow_features shape: {flow_features}\n")
+    print(f"Scaled production_gt shape: {production_gt[1,:,:]}, flow_gt shape: {flow_gt[1,:,:]}, p_loss_gt shape: {p_loss_gt[1,:,:]}\n")
+    total_time = demand_features.shape[0]
+
+    # Create a hetero graph
+    graph_list = build_graph_list(scaled_node_feat, edge_index, scaled_gt, total_time, topology)
+    metadata = graph_list[0].metadata()
+    
+    test_data = graph_list[-1]
+    graph_list = graph_list[:-1]
+    
+    train_graphs, test_graphs = train_test_split(graph_list, test_size=0.2, random_state=42)
+    train_graphs, val_graphs = train_test_split(train_graphs, test_size=0.1, random_state=42)
+
+    train_loader = DataLoader(train_graphs, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_graphs, batch_size=32, shuffle = False)
+    test_loader = DataLoader(test_graphs, batch_size=1, shuffle = False)
+    
+
+    batch_size = 1
+    data_batch = next(iter(test_loader))
+    gt_prod = data_batch['technology'].y
+    gt_flow = data_batch['flow'].y
+    print(f"----------DEMAND FEATURE shape {data_batch['demand'].x.shape} &&& {data_batch['demand'].x}----------\n")
+    print(f"For Test Loader, GT Production shape: {gt_prod.shape} && {gt_prod}, GT Flow shape: {gt_flow.shape} && {gt_flow}\n")
+    prod_loss, flow_loss, flow_cap_loss, balance_loss, sum_flow_loss = calculate_loss(gt_prod, gt_flow, data_batch, batch_size, 
+                                                        loc2flow_index, tech2loc_index,
+                                                        loss_mask=loss_mask)
+    
+    print(f"prod_loss: {prod_loss}, flow_loss: {flow_loss}, flow_cap_loss: {flow_cap_loss}, balance_loss: {balance_loss}, sum_flow_loss: {sum_flow_loss}")
+
+
+    print("Loc2Flow:")
+    print(loc2flow_index)
+    print("Tech2Loc:")
+    print(tech2loc_index)
+
+if __name__ == "__main__":
+    # Example usage
+    base_path = "Instances/3Nodes-no-ren-no-cycle"
+    TOPOLOGY = FULLY_CONNECTED  # or PHYSICAL_CONNECTED
+    training_time = comp_b_check_validate(base_path,
+         learning_rate=0.005,
+         hidden_channels= 64,
+         n_epochs = 10,
+         n_layers = 3,
+         loss_mask=False,
+         logging=False,
+         use_investment_as_feature = True,
+         add_self_loop= True,
+         use_const_violation_loss = True,
+         repair = False,
+         save_model = True,
+         topology = TOPOLOGY) # FULLY_CONNECTED, PHYSICAL_CONNECTED 

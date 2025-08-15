@@ -710,7 +710,8 @@ def build_graph_list(node_feat, edge_index, gt,total_time, topology):
     return graph_list
 
 if __name__ == "__main__":
-    BASE_PATH = "instances/4Nodes-ren-2-cycle"
+    BASE_PATH = "Instances/4Nodes-ren-2-cycle"
+    BASE_PATH = "Instances/3Nodes-no-ren-no-cycle"
     DIRECTED = True
     #G, vertex_to_name = build_graph(BASE_PATH, graph_save_path=SAVE_PATH, json_save_path=JSON_SAVE_PATH, directed=DIRECTED, plot = False, seperate_technology = True, save = False)
     #print(vertex_to_name)
@@ -730,7 +731,7 @@ if __name__ == "__main__":
 
     # print(node_feature[0:2,:,:])
 
-    node_feat,edge_feat, gt,_,scalars  = build_hetero_graph(BASE_PATH, use_investment_as_feature=True, plot = False)
+    node_feat,edge_feat, gt,_,scalars  = build_hetero_graph(BASE_PATH, use_investment_as_feature=True, plot = True)
     # print out all shape 
     print("--------------Output Summary--------------")
     print(f"Tech Features: {node_feat['technology'].shape}")
@@ -753,7 +754,8 @@ if __name__ == "__main__":
 
     # print(f"Total production at t = 0: {total_production_t0.item():.4f}")
     # print(f"Total demand at t = 0: {total_demand_t0.item():.4f}")
-    print(f"Flow Feat: {node_feat['flow']}")
-    print(f"Flow GT: {gt['flow']}")
 
+    print(f"Loc2Flow: {edge_feat['loc2flow']}")
+
+    print(f"Tech2Loc: {edge_feat['tech2loc']}")
 

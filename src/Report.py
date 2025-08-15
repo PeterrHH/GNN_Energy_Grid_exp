@@ -12,7 +12,7 @@ class Report:
 
     def add_instance(self, variable_cost, loss_of_load, instance_idx, production, production_gt,
                      flow, flow_gt, p_loss_gt, demand_feat, feasible):
-        print(f"Adding instance LL is {loss_of_load}")
+        
         prod = production.squeeze()
         prod_gt = production_gt.squeeze()
     
@@ -21,20 +21,24 @@ class Report:
 
         loss_cost_total = self.loss_cost * np.sum(loss_of_load[loss_of_load > 0])
         # print(f"Loss CostL {self.loss_cost} loss_of_load: {loss_of_load} , loss_cost_total: {loss_cost_total}")
+        opt_loss_cost_total = self.loss_cost * np.sum(p_loss_gt[p_loss_gt > 0])
+
         total_obj = op_cost + loss_cost_total
 
         ratios = loss_of_load / (demand_feat)
 
         mean = ratios.mean()
         std = ratios.std()
-        
-        optimal_objective_value = np.sum(p_loss_gt[p_loss_gt >0]) + np.dot(variable_cost, production_gt)
+        optimal_variable_cost = np.dot(variable_cost, production_gt)
+        optimal_objective_value = self.loss_cost * np.sum(p_loss_gt[p_loss_gt >0]) + np.dot(variable_cost, production_gt)
         
         # Store summary row
         self.rows.append({
             "instance": instance_idx,
             "operational_cost": op_cost,
+            "optimal_var_cost": optimal_variable_cost,
             "loss_cost": loss_cost_total,
+            "optimal_loss_cost": opt_loss_cost_total,
             "objective_value": total_obj,
             "optimal_objective_value": optimal_objective_value,
             "feasible": feasible,
@@ -119,5 +123,5 @@ class Report:
 
         # 7) Print scalars, totals, and average gap
         print(f"\nScalars: {scalars}")
-        print(f"Average Relative Objective Gap (feasible only): {avg_rel_gap:.4f}")
+        print(f"Average Relative Objective Gap (feasible only): {avg_rel_gap:.4f}%")
         print(f"Training time: {self.training_time:.4f} seconds")

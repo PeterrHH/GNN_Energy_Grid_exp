@@ -22,7 +22,7 @@ from GraphBuilder import build_hetero_graph, build_graph_list
 from utils import *
 from Scalar_Hetero import HeteroGraphScalar
 from Report import Report
-from Eval import calculate_loss, calc_constraint_violation, summarize_feasibility
+from Eval import calculate_loss, calc_constraint_violation, summarize_feasibility, compute_loss_of_load
 
 
 class FlowBoundLayer(torch.nn.Module):
@@ -418,8 +418,9 @@ def main(base_path, hidden_channels, learning_rate,
             'train_flow_loss': ave_flow_loss,
         }, step=epoch)
         # print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} Balance: {eval_balance_loss:.4f} Flow Cap Loss: {eval_flowcap_loss:.4f}')
-        print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} ProdW: {wp} FlowW: {wf}')
-    training_end = time.time()
+        # print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4} ProdW: {wp} FlowW: {wf}')
+        print(f'Epoch {epoch}, Train total loss: {ave_loss:.4f} Eval Prod Loss: {eval_prod_loss:.4f} Flow Loss: {eval_flow_loss:.4}')
+    training_end = time.time()                         
 
     model.eval()
     
@@ -574,7 +575,8 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
     train_data, val_data = train_test_split(train_data, test_size=0.1, random_state=42)
     train_loader = DataLoader(train_data, batch_size=1, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=1)
-    test_loader = DataLoader(test_data, batch_size=1)
+    test_loader_batch_size = 1
+    test_loader = DataLoader(test_data, batch_size=test_loader_batch_size)
     # Create the Report object
     report = Report(loss_cost=scalars["loss_load"])
     report.inference_time = 0
@@ -599,45 +601,13 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
 
 
         tech_feat, demand_feat, flow_feat = scaler.inverse_data(graph)
+       
+        loss_of_load = compute_loss_of_load(demand_feat,
+                             tech_feat,
+                             flow_feat,
+                             pred_prod,pred_flow,
+                             loc2flow_index, tech2loc_index, test_loader_batch_size)
         
-        # Use the reshaped batch-style checker
-        violation_summary = summarize_feasibility(
-            demand=demand_feat,  # shape: [ N_demand, 1]
-            tech_feat=tech_feat,  # shape: [N_tech, 4]
-            flow=flow_feat.squeeze(-1),  # shape: [1, N_edges]
-            pred_prod=pred_prod.squeeze(-1),  # shape: [N_tech, 1]
-            pred_flow=pred_flow.squeeze(-1),  # shape: [N_edges, 1]
-            print_summary=True,  # Set to True to print the summary
-        )
-
-        is_feasible = all(violation_summary.values())
-        
-        for check, passed in violation_summary.items():
-            if not passed:
-                failure_counts[check] += 1
-        total_prod = []
-
-        for loc_node in range(demand_feat.shape[0]):
-            prod_index = (tech2loc_index[1] == loc_node).nonzero(as_tuple=True)[0]
-            total_prod.append(pred_prod[prod_index].sum())
-
-
-        loss_of_load = []
-        for loc in range(demand_feat.shape[0]):
-            incoming_index = [i for i, (a, b) in enumerate(flow_loc_mapping) if a == loc]
-            outgoing_index = [i for i, (a, b) in enumerate(flow_loc_mapping) if b == loc]
-            prod_index = (tech2loc_index[1] == loc).nonzero(as_tuple=True)[0]
-            #print(f"For loc {loc} incoming {incoming_index} outgoing {outgoing_index} prod index {prod_index}")
-            flow_as_first_index = - pred_flow[incoming_index].sum() if incoming_index else 0.0
-            flow_as_second_index = pred_flow[outgoing_index].sum() if outgoing_index else 0.0
-            total_prod = pred_prod[prod_index].sum()
-            # Find production that belongs to this location loc_node,
-            lhs = total_prod + flow_as_first_index + flow_as_second_index # minus incoming because if its import, production should be negative
-            rhs = demand_feat[loc]
-            e_i = rhs - lhs
-            loss_of_load.append(e_i.item())
-        loss_of_load = torch.tensor(loss_of_load).unsqueeze(1) 
-
             
         # remove all singleton dimensions and move to numpy
         prod = pred_prod.squeeze(-1).detach().cpu().numpy()  # -> shape (N_tech,)
@@ -646,14 +616,32 @@ def evaluate_model(base_path, model_path, training_time,repair, topology):
         flow_gt = gt_flow.squeeze(-1).detach().cpu().numpy()  # -> shape (N_flow,)
         cost = tech_feat[:, 0].detach().cpu().numpy()  # -> shape (N_tech,)
         gt_p_loss = graph['location'].y
+
+
+        
+        violation_summary = summarize_feasibility(
+            demand=demand_feat,                 # shape: [N_demand, 1]
+            tech_feat=tech_feat,                # shape: [N_tech, 4]
+            flow=flow_feat.squeeze(-1),         # shape: [1, N_edges]
+            pred_prod=pred_prod.squeeze(-1),    # shape: [N_tech, 1]
+            pred_flow=pred_flow.squeeze(-1),    # shape: [N_edges, 1]
+            loss_of_load = loss_of_load,
+            print_summary=True,  # Set to True to print the summary
+        )
+
+        is_feasible = all(violation_summary.values())
+        
+        for check, passed in violation_summary.items():
+            if not passed:
+                failure_counts[check] += 1
         
         report.add_instance(
             instance_idx=idx,
             variable_cost=cost,
             loss_of_load=loss_of_load.squeeze().detach().cpu().numpy(),
-            production=prod,
+            production=prod_gt,
             production_gt=prod_gt,
-            flow=flow,
+            flow=flow_gt,
             flow_gt=flow_gt,
             p_loss_gt = gt_p_loss.squeeze().detach().cpu().numpy(),
             demand_feat = demand_feat.squeeze().detach().cpu().numpy(),
@@ -723,13 +711,13 @@ if __name__ == "__main__":
     training_time = main(base_path,
          learning_rate=0.005,
          hidden_channels= 64,
-         n_epochs = 1,
+         n_epochs = 2,
          n_layers = 3,
          loss_mask=False,
          logging=False,
          use_investment_as_feature = True,
          add_self_loop= True,
-         use_const_violation_loss = False,
+         use_const_violation_loss = True,
          repair = False,
          save_model = True,
          topology = TOPOLOGY, # FULLY_CONNECTED, PHYSICAL_CONNECTED 
